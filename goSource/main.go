@@ -16,6 +16,9 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
+	"path/filepath"
 	"time"
 
 	agonesv1 "agones.dev/agones/pkg/apis/agones/v1"
@@ -27,15 +30,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 )
 
 const (
 	gameServerImage      = "GAMESERVER_IMAGE"
 	isHelmTest           = "IS_HELM_TEST"
-	gameserversNamespace = "GAMESERVERS_NAMESPACE"
-
+	gameserversNamespace = "default"
 	defaultNs = "default"
 )
+func getK8sConfig() (*rest.Config, error) {
+	// ローカルのkubeconfigからconfigを作成する
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	}
+	flag.Parse()
+
+	return clientcmd.BuildConfigFromFlags("", *kubeconfig)
+}
 
 func main() {
 	// viper.AllowEmptyEnv(true)
@@ -56,8 +72,16 @@ func main() {
 
 	// pflag.Parse()
 	// runtime.Must(viper.BindPFlags(pflag.CommandLine))
+	config, err := getK8sConfig()
+    if err != nil {
+        panic(err)
+    }
+    // clientset, err := kubernetes.NewForConfig(config)
+    // if err != nil {
+    //     panic(err)
+    // }
 
-	config, err := rest.InClusterConfig()
+	// config, err := rest.InClusterConfig()
 	logger := runtime.NewLoggerWithSource("main")
 	// if err != nil {
 	// 	logger.WithError(err).Fatal("Could not create in cluster config")
@@ -75,7 +99,7 @@ func main() {
 
 	// Access to the Agones resources through the Agones Clientset
 	// Note that we reuse the same config as we used for the Kubernetes Clientset
-	agonesClient, err := versioned.NewForConfig()
+	agonesClient, err := versioned.NewForConfig(config)
 	if err != nil {
 		logger.WithError(err).Fatal("Could not create the agones api clientset")
 	}
@@ -84,12 +108,13 @@ func main() {
 	gs := &agonesv1.GameServer{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "helm-test-server-",
-			Namespace:    viper.GetString(gameserversNamespace),
+			// Namespace:    viper.GetString(gameserversNamespace),
+			Namespace: "default",
 		},
 		Spec: agonesv1.GameServerSpec{
 			Container: "simple-game-server",
 			Ports: []agonesv1.GameServerPort{{
-				ContainerPort: 7654,
+				ContainerPort: 80,
 				Name:          "gameport",
 				PortPolicy:    agonesv1.Dynamic,
 				Protocol:      corev1.ProtocolUDP,
@@ -99,7 +124,8 @@ func main() {
 					Containers: []corev1.Container{
 						{
 							Name:  "simple-game-server",
-							Image: viper.GetString(gameServerImage),
+							// Image: viper.GetString(gameServerImage),
+							Image: "nginx:latest",
 						},
 					},
 				},
@@ -107,6 +133,7 @@ func main() {
 		},
 	}
 	ctx := context.Background()
+	fmt.Println(gs)
 	newGS, err := agonesClient.AgonesV1().GameServers(gs.Namespace).Create(ctx, gs, metav1.CreateOptions{})
 	if err != nil {
 		logrus.Fatal("Unable to create GameServer: %v", err)
