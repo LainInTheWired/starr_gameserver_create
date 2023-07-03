@@ -1,74 +1,179 @@
+// Copyright 2020 Google LLC All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
-	"log"
-
-	// "time"
+	"path/filepath"
+	"time"
 
 	agonesv1 "agones.dev/agones/pkg/apis/agones/v1"
-	e2eframework "agones.dev/agones/test/e2e/framework"
+	"agones.dev/agones/pkg/client/clientset/versioned"
+	"agones.dev/agones/pkg/util/runtime"
+	"github.com/sirupsen/logrus"
+	"github.com/spf13/viper"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
 )
 
-var (
-	framework *e2eframework.Framework
+const (
+	gameServerImage      = "GAMESERVER_IMAGE"
+	isHelmTest           = "IS_HELM_TEST"
+	gameserversNamespace = "default"
+	defaultNs = "default"
 )
+func getK8sConfig() (*rest.Config, error) {
+	// ローカルのkubeconfigからconfigを作成する
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	}
+	flag.Parse()
+	return clientcmd.BuildConfigFromFlags("", *kubeconfig)
+}
 
 func main() {
-	fw, err := e2eframework.NewFromFlags()
+	// viper.AllowEmptyEnv(true)
+	// viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+
+	// pflag.String(gameServerImage, "", "The Address to bind the server grpcPort to. Defaults to 'localhost'")
+	// viper.SetDefault(gameServerImage, "")
+	// runtime.Must(viper.BindEnv(gameServerImage))
+
+	// pflag.Bool(isHelmTest, false,
+	// 	"Is Helm test - defines whether GameServer should be shut down at the end of the test or not. Defaults to false")
+	// viper.SetDefault(isHelmTest, false)
+	// runtime.Must(viper.BindEnv(isHelmTest))
+
+	// pflag.String(gameserversNamespace, defaultNs, "Namespace where GameServers are created. Defaults to default")
+	// viper.SetDefault(gameserversNamespace, defaultNs)
+	// runtime.Must(viper.BindEnv(gameserversNamespace))
+
+	// pflag.Parse()
+	// runtime.Must(viper.BindPFlags(pflag.CommandLine))
+	config, err := getK8sConfig()
+    if err != nil {
+        panic(err)
+    }
+    // clientset, err := kubernetes.NewForConfig(config)
+    // if err != nil {
+    //     panic(err)
+    // }
+
+	// config, err := rest.InClusterConfig()
+	logger := runtime.NewLoggerWithSource("main")
+	// if err != nil {
+	// 	logger.WithError(err).Fatal("Could not create in cluster config")
+	// }
+
+	// // Access to standard Kubernetes resources through the Kubernetes Clientset
+	// // We don't actually need this for this example, but it's just here for
+	// // illustrative purposes
+	// kubeClient, err := kubernetes.NewForConfig(config)
+	// if err != nil {
+	// 	logger.WithError(err).Fatal("Could not create the kubernetes clientset")
+	// }
+	// p := kubeClient.CoreV1().Pods("default")
+	// logger.Info(p)
+
+	// Access to the Agones resources through the Agones Clientset
+	// Note that we reuse the same config as we used for the Kubernetes Clientset
+	agonesClient, err := versioned.NewForConfig(config)
 	if err != nil {
-		log.Fatalf("failed to init e2e e2eframework: %+v", err)
+		logger.WithError(err).Fatal("Could not create the agones api clientset")
 	}
-	framework = fw
 
-	namespace := "default"
+	// Create a GameServer
+	gs := &agonesv1.GameServer{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "helm-test-server-",
+			// Namespace:    viper.GetString(gameserversNamespace),
+			Namespace: "default",
+			Annotations: map[string]string{
+				"octops-kubernetes.io/ingress.class" : "contour",
+				"octops.io/gameserver-ingress-mode" : "path",
+				"octops.io/gameserver-ingress-fqdn": "servers.example.com",
+				"octops-projectcontour.io/websocket-routes": "/{{ .Name }}" ,
+				"octops.io/terminate-tls": "false",
 
-	gsSpec := agonesv1.GameServerSpec{
-		Ports: []agonesv1.GameServerPort{
-			{
-				ContainerPort: 7654,
-				Name:          "tcp",
+			},
+		},
+		Spec: agonesv1.GameServerSpec{
+			Container: "simple-game-server",
+			Ports: []agonesv1.GameServerPort{{
+				ContainerPort: 80,
+				Name:          "gameport",
 				PortPolicy:    agonesv1.Dynamic,
-				Protocol:      corev1.ProtocolTCP,
+				Protocol:      corev1.ProtocolUDP,
 			}},
-		Template: corev1.PodTemplateSpec{
-			Spec: corev1.PodSpec{
-				Containers: []corev1.Container{{
-					Name:            "tcp-server",
-					Image:           "gcr.io/agones-images/tcp-server:0.4",
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					Resources: corev1.ResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("30m"),
-							corev1.ResourceMemory: resource.MustParse("32Mi"),
-						},
-						Limits: corev1.ResourceList{
-							corev1.ResourceCPU:    resource.MustParse("30m"),
-							corev1.ResourceMemory: resource.MustParse("32Mi"),
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "simple-game-server",
+							// Image: viper.GetString(gameServerImage),
+							Image: "nginx:latest",
 						},
 					},
-				}},
+				},
 			},
 		},
 	}
-	fmt.Print(gsSpec)
-	// Fleetを作る
-	fleetDef := &agonesv1.Fleet{
-		ObjectMeta: metav1.ObjectMeta{Name: "fleet-name", Namespace: namespace},
-		Spec: agonesv1.FleetSpec{
-			Replicas: 2,
-			Template: agonesv1.GameServerTemplateSpec{
-				Spec: gsSpec,
-			},
-		},
+	ctx := context.Background()
+	fmt.Println(gs)
+	newGS, err := agonesClient.AgonesV1().GameServers(gs.Namespace).Create(ctx, gs, metav1.CreateOptions{})
+	if err != nil {
+		logrus.Fatal("Unable to create GameServer: %v", err)
 	}
-	// flt, err := framework.AgonesClient.AgonesV1().Fleets(namespace).Create(fleetDef)
-	framework.CreateGameServerAndWaitUntilReady(_, _, gsSpec)
-	fmt.Print(fleetDef)
-	// log.Printf("fleet created! (name: %s)", flt.ObjectMeta.Name)
+	logrus.Infof("New GameServer name is: %s", newGS.ObjectMeta.Name)
 
+	if viper.GetBool(isHelmTest) {
+		err = wait.PollImmediate(1*time.Second, 60*time.Second, func() (bool, error) {
+			checkGs, err := agonesClient.AgonesV1().GameServers(gs.Namespace).Get(ctx, newGS.Name, metav1.GetOptions{})
+
+			if err != nil {
+				logrus.WithError(err).Warn("error retrieving gameserver")
+				return false, nil
+			}
+
+			state := agonesv1.GameServerStateReady
+			logger.WithField("gs", checkGs.ObjectMeta.Name).
+				WithField("currentState", checkGs.Status.State).
+				WithField("awaitingState", state).Info("Waiting for states to match")
+
+			if checkGs.Status.State == state {
+				return true, nil
+			}
+
+			return false, nil
+		})
+		if err != nil {
+			logrus.Fatalf("Wait GameServer to become Ready failed: %v", err)
+		}
+
+		err = agonesClient.AgonesV1().GameServers(gs.Namespace).Delete(ctx, newGS.ObjectMeta.Name, metav1.DeleteOptions{})
+		if err != nil {
+			logrus.Fatalf("Unable to delete GameServer: %v", err)
+		}
+	}
 }

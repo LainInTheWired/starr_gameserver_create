@@ -110,6 +110,14 @@ func main() {
 			GenerateName: "helm-test-server-",
 			// Namespace:    viper.GetString(gameserversNamespace),
 			Namespace: "default",
+			Annotations: map[string]string{
+				"octops-kubernetes.io/ingress.class" : "contour",
+				"octops.io/gameserver-ingress-mode" : "path",
+				"octops.io/gameserver-ingress-fqdn": "servers.example.com",
+				"octops-projectcontour.io/websocket-routes": "/{{ .Name }}" ,
+				"octops.io/terminate-tls": "false",
+
+			},
 		},
 		Spec: agonesv1.GameServerSpec{
 			Container: "simple-game-server",

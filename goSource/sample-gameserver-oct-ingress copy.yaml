@@ -1,0 +1,24 @@
+
+apiVersion: "agones.dev/v1"
+kind: GameServer
+metadata:
+  generateName: "os-ingress-gs-"
+spec:
+  ports:
+    - name: default
+      portPolicy: Dynamic
+      containerPort: 7654
+  template:
+    metadata:
+      annotations:
+      
+        octops-kubernetes.io/ingress.class: "contour" #required for Contour to handle ingress
+        octops-projectcontour.io/websocket-routes: "/{{ .Name }}" #required for Contour to enable websocket for exact path. This is a template that the controller will replace by the name of the game server
+        octops.io/gameserver-ingress-mode: "path"
+        octops.io/gameserver-ingress-fqdn: servers.example.com
+        octops.io/terminate-tls	: "false"
+    spec:
+        containers:
+        - name: simple-game-server
+          image:  us-docker.pkg.dev/agones-images/examples/simple-game-server:0.16
+          imagePullPolicy: Always
